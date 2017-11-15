@@ -51,7 +51,7 @@ $(BUILD_ROOT)/$(HD_IMG): $(TARGET)
 	@mv fat.img $(BUILD_ROOT)/$(HD_IMG)
 
 run: img
-	qemu-system-x86_64 -enable-kvm -net none -m 1024 -bios ovmf.fd -usb -usbdevice disk::$(BUILD_ROOT)/$(HD_IMG)
+	qemu-system-x86_64.exe -m 1024 -bios ovmf.fd -usb -usbdevice disk::$(BUILD_ROOT)/$(HD_IMG)
 
 clean:
 	@$(CARGO) clean
