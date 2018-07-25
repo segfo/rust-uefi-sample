@@ -37,8 +37,10 @@ $(OBJS): $(SRC)
 	cd target/$(TARGET_ARCH)/debug && $(AR) x *.a
 
 $(TARGET): $(OBJS)
-	@mkdir -p $(BUILD_ROOT)
+	@mkdir -p $(BUILD_ROOT)/EFI/BOOT/
 	$(LD) $(LDFLAGS) -o $@ $(dir $(OBJS))*.o
+	cp -fp $(TARGET) $(BUILD_ROOT)/EFI/BOOT/
+
 
 img: $(BUILD_ROOT)/$(HD_IMG)
 
@@ -50,8 +52,8 @@ $(BUILD_ROOT)/$(HD_IMG): $(TARGET)
 	@$(MCOPY) -i fat.img $(TARGET) ::/EFI/BOOT
 	@mv fat.img $(BUILD_ROOT)/$(HD_IMG)
 
-run: img
-	qemu-system-x86_64.exe -m 1024 -bios ovmf.fd -usb -usbdevice disk::$(BUILD_ROOT)/$(HD_IMG)
+run: $(TARGET)
+	qemu-system-x86_64.exe -m 1024 -bios ovmf.fd -hda fat:$(BUILD_ROOT)/
 
 clean:
 	@$(CARGO) clean

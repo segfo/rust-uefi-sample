@@ -25,10 +25,14 @@ $ tar xf x86_64-efi-pe-binutils.tar.xz -C $PWD/toolchain
 $ export PATH=$PATH:$PWD/toolchain/usr/bin/
 ```
 
+```sh
+$ export RUST_TARGET_PATH=`pwd`
+$ make
+```
+
 Then, only you run `make` on root directory.
 
 How to run
 -------------
 
-- install mtools on your system
 - then, kick `make run` command.

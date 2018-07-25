@@ -3,15 +3,15 @@
 #![feature(intrinsics)]
 #![feature(lang_items)]
 #![feature(compiler_builtins_lib)]
+#![feature(panic_implementation)]
 
 extern crate uefi;
-extern crate rlibc;
-extern crate compiler_builtins;
 
 use uefi::SimpleTextOutput;
 use uefi::graphics::{PixelFormat,Pixel};
 use core::mem;
 use core::fmt::Write;
+use core::panic::PanicInfo;
 
 struct RGB{
     r:u8,
@@ -59,6 +59,12 @@ impl RGB{
 
 pub struct Writer;
 
+impl Writer{
+    fn new()->Self{
+        Writer{}
+    }
+}
+
 impl core::fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         uefi::get_system_table().console().write(s);
@@ -92,7 +98,7 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     uefi::get_system_table().console().write("UEFI vendor: ");
     uefi::get_system_table().console().write_raw(uefi::get_system_table().vendor());
     uefi::get_system_table().console().write("\n\r");
-
+    
     let tm = rs.get_time().unwrap();
     let info = gop.query_mode(mode).unwrap();
     let resolutin_w : usize = info.horizontal_resolution as usize;
@@ -105,7 +111,7 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
         for x in 0..255{
             c.hsv2rgb(x,255,255);
             let px = Pixel::new(c.r,c.g,c.b);
-            
+
             let mut count = 0;
             while count < AREA {
                 unsafe{
@@ -147,11 +153,9 @@ pub extern "C" fn _Unwind_Resume() -> ! {
 #[no_mangle]
 pub extern fn rust_eh_personality() {}
 
-#[lang = "panic_fmt"]
+#[panic_implementation]
 #[no_mangle]
-pub extern fn rust_begin_panic(_msg: core::fmt::Arguments,
-                               _file: &'static str,
-                               _line: u32) -> ! {
+pub extern fn rust_begin_panic(_info:&PanicInfo) -> ! {
     uefi::get_system_table().console().write("panic!");
     loop {}
 }
