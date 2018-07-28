@@ -6,72 +6,40 @@
 #![feature(panic_implementation)]
 
 extern crate uefi;
-
+use core::fmt::Write;
 use uefi::SimpleTextOutput;
 use uefi::graphics::{PixelFormat,Pixel};
 use core::mem;
-use core::fmt::Write;
 use core::panic::PanicInfo;
+mod baselib;
+use baselib::{graphic::RGB,serial::SerialWriter};
 
-struct RGB{
-    r:u8,
-    g:u8,
-    b:u8
-}
+fn show_memmap(){
+    let (memory_map, memory_map_size, map_key, descriptor_size, descriptor_version) = uefi::lib_memory_map();
+    let mut w = SerialWriter::new();
+    let memory_maps = memory_map as * const uefi::MemoryDescriptor as usize;
 
-impl RGB{
-    fn new()->Self{
-        Self{
-            r:0,
-            g:0,
-            b:0
+    for i in 0..memory_map_size/descriptor_size{
+        let memory_map=unsafe{
+            mem::transmute::<*const uefi::MemoryDescriptor, &'static uefi::MemoryDescriptor>
+                ((memory_maps+(i*descriptor_size))as *const uefi::MemoryDescriptor)
+        };
+        let pages=memory_map.number_of_pages();
+        if pages != 0{
+            let phys_start = memory_map.physical_start();
+            let virt_start = memory_map.virtual_start();
+            write!(w,"{:?}",memory_map.type_of_memory());
+            write!(w,"|p:{:x}",phys_start);
+            write!(w,"|v:{:x}",virt_start);
+            write!(w,"|pages:{},({} kb)",pages,pages*4);
+            write!(w,"|attr:{:x}\r\n",memory_map.attribute());
+        }else{
+            break;
         }
     }
-
-    fn hsv2rgb(&mut self,h:u8,s:u8,v:u8){
-        let h = h as f64 /255.0;
-        let s = s as f64 /255.0;
-        let v = v as f64 /255.0;
-        let mut r = v;
-        let mut g = v;
-        let mut b = v;
-
-        let mut h=h;
-        if s > 0.0 {
-            h *= 6.0;
-            let  i = h as u32;
-            let f = h - (i as f64);
-            match i{
-                0=>{g *= 1.0 - s * (1.0 - f); b *= 1.0 - s;},
-                1=>{r *= 1.0 - s * f; b *= 1.0 - s;},
-                2=>{r *= 1.0 - s; b *= 1.0 - s * (1.0 - f);},
-                3=>{r *= 1.0 - s;g *= 1.0 - s * f;},
-                4=>{r *= 1.0 - s * (1.0 - f);g *= 1.0 - s;},
-                5=>{g *= 1.0 - s;b *= 1.0 - s * f;},
-                _=>{}
-            }
-        }
-        self.r=(r*255.0) as u8;
-        self.g=(g*255.0) as u8;
-        self.b=(b*255.0) as u8;
-    }
+    write!(w,"memmap size : {}\r\n",memory_map_size);
+    write!(w,"descriptor size : {}",descriptor_size);
 }
-
-pub struct Writer;
-
-impl Writer{
-    fn new()->Self{
-        Writer{}
-    }
-}
-
-impl core::fmt::Write for Writer {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        uefi::get_system_table().console().write(s);
-        Ok(())
-    }
-}
-
 
 #[allow(unreachable_code)]
 #[no_mangle]
@@ -93,18 +61,20 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
         mode = i;
     };
 
-    gop.set_mode(mode);
-
     uefi::get_system_table().console().write("UEFI vendor: ");
     uefi::get_system_table().console().write_raw(uefi::get_system_table().vendor());
-    uefi::get_system_table().console().write("\n\r");
+    uefi::get_system_table().console().write("\n\r\n\r");
     
     let tm = rs.get_time().unwrap();
     let info = gop.query_mode(mode).unwrap();
     let resolutin_w : usize = info.horizontal_resolution as usize;
     let resolutin_h : usize = info.vertical_resolution as usize;
     const AREA : usize = 800 * 600;
-    
+
+    // メモリマップを表示
+    show_memmap();
+
+    //　適当に描画
     let bitmap = bs.allocate_pool::<Pixel>(mem::size_of::<Pixel>() * AREA).unwrap();
     let mut c = RGB::new();
     loop {
@@ -127,7 +97,7 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     let (memory_map, memory_map_size, map_key, descriptor_size, descriptor_version) = uefi::lib_memory_map();
     bs.exit_boot_services(&hdl, &map_key);
     rs.set_virtual_address_map(&memory_map_size, &descriptor_size, &descriptor_version, memory_map);
-
+    
     loop {
     }
     uefi::Status::Success
