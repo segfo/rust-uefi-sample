@@ -14,8 +14,7 @@ use core::panic::PanicInfo;
 mod baselib;
 use baselib::{graphic::RGB,serial::SerialWriter};
 
-fn show_memmap(){
-    let (memory_map, memory_map_size, map_key, descriptor_size, descriptor_version) = uefi::lib_memory_map();
+fn show_memmap(memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descriptor_size:usize){
     let mut w = SerialWriter::new();
     let memory_maps = memory_map as * const uefi::MemoryDescriptor as usize;
 
@@ -41,6 +40,10 @@ fn show_memmap(){
     write!(w,"descriptor size : {}",descriptor_size);
 }
 
+extern{
+    fn io_hlt();
+}
+
 #[allow(unreachable_code)]
 #[no_mangle]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -52,11 +55,14 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     let gop = uefi::graphics::GraphicsOutputProtocol::new().unwrap();
 
     let mut mode: u32 = 0;
+    let mut w = SerialWriter::new();
     for i in 0..gop.get_max_mode() {
         let info = gop.query_mode(i).unwrap();
+        write!(w,"w:{} h:{} pix_fmt:{:?}\r\n",info.horizontal_resolution,info.vertical_resolution,info.pixel_format);
         if info.pixel_format != PixelFormat::RedGreenBlue
-            && info.pixel_format != PixelFormat::BlueGreenRed { continue; }
-        if info.horizontal_resolution > 1920 && info.vertical_resolution > 1080 { continue; }
+            && info.pixel_format != PixelFormat::BlueGreenRed { 
+                continue;
+            }
         if info.horizontal_resolution == 1920 && info.vertical_resolution == 1080 { mode = i; break; }
         mode = i;
     };
@@ -67,19 +73,18 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     
     let tm = rs.get_time().unwrap();
     let info = gop.query_mode(mode).unwrap();
-    let resolutin_w : usize = info.horizontal_resolution as usize;
-    let resolutin_h : usize = info.vertical_resolution as usize;
-    const AREA : usize = 800 * 600;
+    let resolution_w : usize = info.horizontal_resolution as usize;
+    let resolution_h : usize = info.vertical_resolution as usize;
 
-    // メモリマップを表示
-    show_memmap();
+    let AREA : usize = resolution_h * resolution_w;
 
     //　適当に描画
     let bitmap = bs.allocate_pool::<Pixel>(mem::size_of::<Pixel>() * AREA).unwrap();
+/*
     let mut c = RGB::new();
-    loop {
+//    loop {
         for x in 0..255{
-            c.hsv2rgb(x,255,255);
+            c.hsv2rgb(x,128,255);
             let px = Pixel::new(c.r,c.g,c.b);
 
             let mut count = 0;
@@ -89,16 +94,35 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
                 };
                 count += 1;
             }
-            gop.draw(bitmap, resolutin_w/2-400, resolutin_h/2-300, 800, 600);
-            bs.stall(100000);
+            gop.draw(bitmap, 0, 0, resolution_w, resolution_h);
+            bs.stall(1000);
         }
-    }
+        */
+//    }
 
     let (memory_map, memory_map_size, map_key, descriptor_size, descriptor_version) = uefi::lib_memory_map();
     bs.exit_boot_services(&hdl, &map_key);
+
+        let mut c = RGB::new();
+//    loop {
+        for x in 0..255{
+            c.hsv2rgb(x,128,255);
+            let px = Pixel::new(c.r,c.g,c.b);
+
+            let mut count = 0;
+            while count < AREA {
+                unsafe{
+                    *bitmap.offset(count as isize) = px.clone();
+                };
+                count += 1;
+            }
+            gop.draw(bitmap, 0, 0, resolution_w, resolution_h);
+            bs.stall(1000);
+        }
     rs.set_virtual_address_map(&memory_map_size, &descriptor_size, &descriptor_version, memory_map);
-    
+    show_memmap(memory_map,memory_map_size,descriptor_size);
     loop {
+        unsafe{io_hlt();}
     }
     uefi::Status::Success
 }
@@ -125,7 +149,8 @@ pub extern fn rust_eh_personality() {}
 
 #[panic_implementation]
 #[no_mangle]
-pub extern fn rust_begin_panic(_info:&PanicInfo) -> ! {
-    uefi::get_system_table().console().write("panic!");
-    loop {}
+pub extern fn rust_begin_panic(info:&PanicInfo) -> ! {
+    let mut w = SerialWriter::new();
+    write!(w,"{}",info);
+    loop {unsafe{io_hlt();}}
 }
