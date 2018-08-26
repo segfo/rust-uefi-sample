@@ -13,10 +13,19 @@ use core::mem;
 use core::panic::PanicInfo;
 mod baselib;
 use baselib::{graphic::RGB,serial::SerialWriter};
+mod memory;
+use memory::{PAGE_SIZE};
+use memory::frame_allocator::{memtranse,PageMemoryManager};
 
 fn show_memmap(memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descriptor_size:usize){
     let mut w = SerialWriter::new();
     let memory_maps = memory_map as * const uefi::MemoryDescriptor as usize;
+    let available_types=[
+        uefi::MemoryType::BootServicesCode,
+        uefi::MemoryType::BootServicesData,
+        uefi::MemoryType::Conventional];
+    let mut memory_size=0;
+    let mut available_size=0;
 
     for i in 0..memory_map_size/descriptor_size{
         let memory_map=unsafe{
@@ -24,20 +33,62 @@ fn show_memmap(memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descript
                 ((memory_maps+(i*descriptor_size))as *const uefi::MemoryDescriptor)
         };
         let pages=memory_map.number_of_pages();
-        if pages != 0{
-            let phys_start = memory_map.physical_start();
-            let virt_start = memory_map.virtual_start();
-            write!(w,"{:?}",memory_map.type_of_memory());
-            write!(w,"|p:{:x}",phys_start);
-            write!(w,"|v:{:x}",virt_start);
-            write!(w,"|pages:{},({} kb)",pages,pages*4);
-            write!(w,"|attr:{:x}\r\n",memory_map.attribute());
+        let memtype = memory_map.type_of_memory();
+        if pages != 0 {
+            for available in &available_types{
+                if *available==memtype{
+                    let phys_start = memory_map.physical_start();
+                    let virt_start = memory_map.virtual_start();
+                    write!(w,"{:?}",memtype);
+                    write!(w,"|p:{:x}",phys_start);
+                    write!(w,"-{:x}",phys_start+pages*4096);//virt_start);
+                    write!(w,"|pages:{},({} kb)",pages,pages*4);
+                    write!(w,"|attr:{:x}\r\n",memory_map.attribute());
+                    available_size+=pages*4096;
+                }
+            }
+            memory_size+=pages*4096;
         }else{
             break;
         }
     }
     write!(w,"memmap size : {}\r\n",memory_map_size);
-    write!(w,"descriptor size : {}",descriptor_size);
+    write!(w,"descriptor size : {}\r\n",descriptor_size);
+}
+
+fn init_sysphys_pagememory(pmm:&mut PageMemoryManager,memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descriptor_size:usize){
+    let mut w = SerialWriter::new();
+    let memory_maps = memory_map as * const uefi::MemoryDescriptor as usize;
+    let available_types=[
+        uefi::MemoryType::BootServicesCode,
+        uefi::MemoryType::BootServicesData,
+        uefi::MemoryType::Conventional];
+    let mut memory_size=0;
+    let mut available_size=0;
+
+    for i in 0..memory_map_size/descriptor_size{
+        let memory_map=unsafe{
+            mem::transmute::<*const uefi::MemoryDescriptor, &'static uefi::MemoryDescriptor>
+                ((memory_maps+(i*descriptor_size))as *const uefi::MemoryDescriptor)
+        };
+        let pages = memory_map.number_of_pages();
+        let memtype = memory_map.type_of_memory();
+        if pages != 0 {
+            for available in &available_types{
+                if *available==memtype{
+                    // 有効なメモリエリアのみここに入る
+                    // ページメモリはここで登録
+                    unsafe{pmm.free_frames(memtranse(memory_map.physical_start(),pages*PAGE_SIZE));}
+                    available_size+=pages*PAGE_SIZE;
+                }
+            }
+            memory_size+=pages*PAGE_SIZE;
+        }else{
+            break;
+        }
+    }
+    // システムメモリの総容量を登録する
+    unsafe{pmm.set_system_memory_total_capacity(memory_size);}
 }
 
 extern{
@@ -53,12 +104,10 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     let bs = uefi::get_system_table().boot_services();
     let rs = uefi::get_system_table().runtime_services();
     let gop = uefi::graphics::GraphicsOutputProtocol::new().unwrap();
-
+    // グラフィックの初期化
     let mut mode: u32 = 0;
-    let mut w = SerialWriter::new();
     for i in 0..gop.get_max_mode() {
         let info = gop.query_mode(i).unwrap();
-        write!(w,"w:{} h:{} pix_fmt:{:?}\r\n",info.horizontal_resolution,info.vertical_resolution,info.pixel_format);
         if info.pixel_format != PixelFormat::RedGreenBlue
             && info.pixel_format != PixelFormat::BlueGreenRed { 
                 continue;
@@ -70,61 +119,38 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     uefi::get_system_table().console().write("UEFI vendor: ");
     uefi::get_system_table().console().write_raw(uefi::get_system_table().vendor());
     uefi::get_system_table().console().write("\n\r\n\r");
-    
+    //
     let tm = rs.get_time().unwrap();
     let info = gop.query_mode(mode).unwrap();
     let resolution_w : usize = info.horizontal_resolution as usize;
     let resolution_h : usize = info.vertical_resolution as usize;
 
     let AREA : usize = resolution_h * resolution_w;
-
-    //　適当に描画
     let bitmap = bs.allocate_pool::<Pixel>(mem::size_of::<Pixel>() * AREA).unwrap();
-/*
-    let mut c = RGB::new();
-//    loop {
-        for x in 0..255{
-            c.hsv2rgb(x,128,255);
-            let px = Pixel::new(c.r,c.g,c.b);
 
-            let mut count = 0;
-            while count < AREA {
-                unsafe{
-                    *bitmap.offset(count as isize) = px.clone();
-                };
-                count += 1;
-            }
-            gop.draw(bitmap, 0, 0, resolution_w, resolution_h);
-            bs.stall(1000);
-        }
-        */
-//    }
-
+    // メモリ周りの初期化
+    // メモリマップを取って、EFI BootServicesを抜ける
+    // 抜けたあとに、仮想メモリマップを登録する。このあたりのことは下のコードを参考にした
+    // https://github.com/CumulusNetworks/linux-apd/blob/master/drivers/firmware/efi/libstub/fdt.c#L275
+    // https://github.com/CumulusNetworks/linux-apd/blob/master/drivers/firmware/efi/libstub/fdt.c#L286
     let (memory_map, memory_map_size, map_key, descriptor_size, descriptor_version) = uefi::lib_memory_map();
     bs.exit_boot_services(&hdl, &map_key);
-
-        let mut c = RGB::new();
-//    loop {
-        for x in 0..255{
-            c.hsv2rgb(x,128,255);
-            let px = Pixel::new(c.r,c.g,c.b);
-
-            let mut count = 0;
-            while count < AREA {
-                unsafe{
-                    *bitmap.offset(count as isize) = px.clone();
-                };
-                count += 1;
-            }
-            gop.draw(bitmap, 0, 0, resolution_w, resolution_h);
-            bs.stall(1000);
-        }
     rs.set_virtual_address_map(&memory_map_size, &descriptor_size, &descriptor_version, memory_map);
-    show_memmap(memory_map,memory_map_size,descriptor_size);
+    let mut pmm = PageMemoryManager::new();
+    init_sysphys_pagememory(&mut pmm,memory_map,memory_map_size,descriptor_size);
+    // カーネルをキック
+    run_kernel(&mut pmm);
     loop {
         unsafe{io_hlt();}
     }
     uefi::Status::Success
+}
+
+// 他のファイルにぶち込もうな。
+fn run_kernel(pmm:&mut PageMemoryManager){
+    let mut w = SerialWriter::new();
+    let mega=1024*1024;
+    write!(w,"system memory info: {} MB / {} MB(physical memory)\r\n",pmm.get_freearea_bytes()/mega,pmm.get_memory_capacity()/mega);
 }
 
 #[no_mangle]
