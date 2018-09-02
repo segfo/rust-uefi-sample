@@ -6,6 +6,8 @@
 #![feature(panic_implementation)]
 
 extern crate uefi;
+#[macro_use]
+extern crate bitflags;
 use core::fmt::Write;
 use uefi::SimpleTextOutput;
 use uefi::graphics::{PixelFormat,Pixel};
@@ -16,6 +18,9 @@ use baselib::{graphic::RGB,serial::SerialWriter};
 mod memory;
 use memory::{PAGE_SIZE};
 use memory::frame_allocator::{memtranse,PageMemoryManager};
+mod boot;
+use boot::*;//BootInfo;
+mod kernel;
 
 fn show_memmap(memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descriptor_size:usize){
     let mut w = SerialWriter::new();
@@ -37,14 +42,28 @@ fn show_memmap(memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descript
         if pages != 0 {
             for available in &available_types{
                 if *available==memtype{
-                    let phys_start = memory_map.physical_start();
-                    let virt_start = memory_map.virtual_start();
-                    write!(w,"{:?}",memtype);
-                    write!(w,"|p:{:x}",phys_start);
-                    write!(w,"-{:x}",phys_start+pages*4096);//virt_start);
-                    write!(w,"|pages:{},({} kb)",pages,pages*4);
-                    write!(w,"|attr:{:x}\r\n",memory_map.attribute());
-                    available_size+=pages*4096;
+                    let start=memory_map.physical_start();
+                    if start!=0{
+                        let phys_start = memory_map.physical_start();
+                        let virt_start = memory_map.virtual_start();
+                        write!(w,"{:?}",memtype);
+                        write!(w,"|p:{:x}",phys_start);
+                        write!(w,"-{:x}",phys_start+pages*PAGE_SIZE);//virt_start);
+                        write!(w,"|pages:{},({} kb)",pages,pages*4);
+                        write!(w,"|attr:{:x}\r\n",memory_map.attribute());
+                        available_size+=pages*PAGE_SIZE;
+                    }else if pages>1{
+                        let phys_start = memory_map.physical_start()+PAGE_SIZE;
+                        let virt_start = memory_map.virtual_start()+PAGE_SIZE;
+                        let pages=pages-1;
+                        write!(w,"{:?}",memtype);
+                        write!(w,"|p:{:x}",phys_start);
+                        write!(w,"-{:x}",phys_start+pages*PAGE_SIZE);//virt_start);
+                        write!(w,"|pages:{},({} kb)",pages,pages*4);
+                        write!(w,"|attr:{:x}\r\n",memory_map.attribute());
+                        available_size+=pages*PAGE_SIZE;
+                    }
+
                 }
             }
             memory_size+=pages*4096;
@@ -52,12 +71,13 @@ fn show_memmap(memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descript
             break;
         }
     }
+/*
     write!(w,"memmap size : {}\r\n",memory_map_size);
     write!(w,"descriptor size : {}\r\n",descriptor_size);
+*/
 }
 
 fn init_sysphys_pagememory(pmm:&mut PageMemoryManager,memory_map:&uefi::MemoryDescriptor,memory_map_size:usize,descriptor_size:usize){
-    let mut w = SerialWriter::new();
     let memory_maps = memory_map as * const uefi::MemoryDescriptor as usize;
     let available_types=[
         uefi::MemoryType::BootServicesCode,
@@ -78,8 +98,16 @@ fn init_sysphys_pagememory(pmm:&mut PageMemoryManager,memory_map:&uefi::MemoryDe
                 if *available==memtype{
                     // 有効なメモリエリアのみここに入る
                     // ページメモリはここで登録
-                    unsafe{pmm.free_frames(memtranse(memory_map.physical_start(),pages*PAGE_SIZE));}
-                    available_size+=pages*PAGE_SIZE;
+                    let start=memory_map.physical_start();
+                    if start!=0{
+                        unsafe{pmm.free_frames(memtranse(start,pages*PAGE_SIZE));}
+                        available_size+=pages*PAGE_SIZE;
+                    }else if pages>1{
+                        let pages=pages-1;
+                        // 開始アドレス0だけど、ページが2個以上連続していたら、次のページから登録する。
+                        unsafe{pmm.free_frames(memtranse(start+PAGE_SIZE,pages*PAGE_SIZE));}
+                        available_size+=pages*PAGE_SIZE;
+                    }
                 }
             }
             memory_size+=pages*PAGE_SIZE;
@@ -127,7 +155,7 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
 
     let AREA : usize = resolution_h * resolution_w;
     let bitmap = bs.allocate_pool::<Pixel>(mem::size_of::<Pixel>() * AREA).unwrap();
-
+    
     // メモリ周りの初期化
     // メモリマップを取って、EFI BootServicesを抜ける
     // 抜けたあとに、仮想メモリマップを登録する。このあたりのことは下のコードを参考にした
@@ -136,21 +164,16 @@ pub extern "win64" fn efi_main(hdl: uefi::Handle, sys: uefi::SystemTable) -> uef
     let (memory_map, memory_map_size, map_key, descriptor_size, descriptor_version) = uefi::lib_memory_map();
     bs.exit_boot_services(&hdl, &map_key);
     rs.set_virtual_address_map(&memory_map_size, &descriptor_size, &descriptor_version, memory_map);
-    let mut pmm = PageMemoryManager::new();
+    let mut pmm = unsafe{PageMemoryManager::get_instance()};
     init_sysphys_pagememory(&mut pmm,memory_map,memory_map_size,descriptor_size);
+    show_memmap(memory_map,memory_map_size,descriptor_size);
     // カーネルをキック
-    run_kernel(&mut pmm);
+    let (base,size)=gop.get_framebuffer();
+    kernel::kernel_main(BootInfo::new().set_graphics(Graphics{framebuffer_base:base,framebuffer_size:size}).build());
     loop {
         unsafe{io_hlt();}
     }
     uefi::Status::Success
-}
-
-// 他のファイルにぶち込もうな。
-fn run_kernel(pmm:&mut PageMemoryManager){
-    let mut w = SerialWriter::new();
-    let mega=1024*1024;
-    write!(w,"system memory info: {} MB / {} MB(physical memory)\r\n",pmm.get_freearea_bytes()/mega,pmm.get_memory_capacity()/mega);
 }
 
 #[no_mangle]
@@ -177,6 +200,6 @@ pub extern fn rust_eh_personality() {}
 #[no_mangle]
 pub extern fn rust_begin_panic(info:&PanicInfo) -> ! {
     let mut w = SerialWriter::new();
-    write!(w,"{}",info);
+    write!(w,"****kernel panic****\r\n{}",info);
     loop {unsafe{io_hlt();}}
 }

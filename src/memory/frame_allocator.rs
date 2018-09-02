@@ -14,13 +14,22 @@ struct MemoryArea{
     next:MemoryAreaPtr
 }
 
-// 管理構造体の静的な初期化
-static mut MEMORY_AREAS:[MemoryArea;ARRAY_CNT]=[
+// ここから管理構造体やオブジェクトの静的な初期化（シングルトン）
+static mut INITIALIZED:bool = false;
+static mut MEM_MANAGER:PageMemoryManager = PageMemoryManager{
+            freelist:MemoryAreaPtr(ptr::null_mut()),
+            uselist:MemoryAreaPtr(ptr::null_mut()),
+            free_total_size:0,
+            lost_total:0,
+            mem_total:0,
+        };
+static mut MEMORY_AREAS:[MemoryArea;ARRAY_CNT] = [
         MemoryArea{
             start:0,size:0,
             prev:MemoryAreaPtr(ptr::null_mut()),
             next:MemoryAreaPtr(ptr::null_mut())
         };ARRAY_CNT];
+// ここまで管理構造体やオブジェクトの静的な初期化（シングルトン）
 
 #[derive(Clone,Copy,Debug,PartialEq)]
 struct MemoryAreaPtr(*mut MemoryArea);
@@ -54,18 +63,15 @@ impl PageMemoryManager{
         MemoryAreaPtr(ptr)
     }
 
-    pub fn new()->Self{
-        let mut manager=PageMemoryManager{
-            freelist:MemoryAreaPtr(ptr::null_mut()),
-            uselist:MemoryAreaPtr(ptr::null_mut()),
-            free_total_size:0,
-            lost_total:0,
-            mem_total:0,
-        };
-        manager.list_init();
-        let entity = unsafe{manager.get_entity()};
-        manager.uselist=entity;
-        manager
+    pub unsafe fn get_instance()->&'static mut Self{
+        if INITIALIZED{
+            return &mut MEM_MANAGER
+        }
+        MEM_MANAGER.list_init();
+        let entity = unsafe{MEM_MANAGER.get_entity()};
+        MEM_MANAGER.uselist=entity;
+        INITIALIZED = true;
+        &mut MEM_MANAGER
     }
 
     pub fn get_freearea_bytes(&self)->usize{

@@ -7,7 +7,9 @@ authors = ["segfo k.segfo@gmail.com"]
 debug=true
 
 [dependencies]
-uefi = { git = "https://github.com/segfo/rust-uefi", branch = "beta" }
+#uefi = { git = "https://github.com/segfo/rust-uefi", branch = "beta" }
+uefi = { path = "../rust-uefi", branch = "beta" }
+bitflags = "1.0"
 
 [lib]
 crate-type = ["staticlib"]
